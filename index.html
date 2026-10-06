@@ -158,8 +158,15 @@ details.how p{margin:6px 0 0;max-width:68ch}
 .detail ul{margin:0;padding-left:18px;color:var(--muted);font-size:12.5px;display:grid;gap:2px}
 .detail .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 .more{margin:8px 14px 12px}
-.btnlike{cursor:pointer;border:1px solid var(--accent);background:var(--accent);color:var(--surface);border-radius:8px;padding:6px 12px;font-weight:600}
-.btnlike:hover{filter:brightness(1.08)}
+.btnlike{cursor:pointer;border:1px solid var(--line);background:var(--surface);border-radius:8px;padding:6px 12px}
+.btnlike:hover{border-color:var(--accent)}
+.dealrow{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.dealrow label{display:grid;gap:3px;min-width:0}
+.dealrow input{width:100%;min-width:0;border:1px solid var(--line);border-radius:8px;padding:7px 9px;background:var(--bg)}
+#dTicker{text-transform:uppercase}
+.deals{padding-top:10px;border-top:1px solid var(--line)}
+.deals td{font-size:12.5px}
+@media (max-width:600px){.dealrow{grid-template-columns:1fr 1fr}.deals td:nth-child(5){display:none}.deals td{padding:6px 5px}}
 .src{padding:6px 14px;font-size:12px;color:var(--muted);border-bottom:1px solid var(--line)}
 @media (max-width:900px){.app{grid-template-columns:minmax(0,1fr)}.side{position:static}}
 @media (max-width:600px){
@@ -228,12 +235,34 @@ details.how p{margin:6px 0 0;max-width:68ch}
           <div class="k"><span class="label">Вложено</span><span class="v" id="tCost">—</span><span class="s flat">&nbsp;</span></div>
           <span class="grow"></span>
           <div class="strip">
-            <label class="btnlike" for="reportFile">Загрузить отчёт Сбера</label>
+            <button type="button" class="primary" id="dealBtn">+ Сделка</button>
+            <label class="btnlike" for="reportFile">Отчёт Сбера</label>
             <input type="file" id="reportFile" accept=".html,.htm,text/html" multiple hidden>
             <button type="button" id="editBtn">Изменить</button>
           </div>
         </div>
         <div class="src" id="pfSrc" hidden></div>
+        <form class="editor" id="dealForm" hidden autocomplete="off">
+          <div class="row" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <div class="seg" role="group" aria-label="Тип сделки">
+              <button type="button" data-side="1" aria-pressed="true">Купил</button>
+              <button type="button" data-side="-1" aria-pressed="false">Продал</button>
+            </div>
+            <span class="hint" id="dName"></span>
+          </div>
+          <div class="dealrow">
+            <label><span class="label">Тикер</span><input id="dTicker" list="tickerList" placeholder="SBER" required></label>
+            <label><span class="label">Количество</span><input id="dQty" inputmode="decimal" placeholder="10" required></label>
+            <label><span class="label" id="dPriceL">Цена, ₽</span><input id="dPrice" inputmode="decimal" placeholder="0" required></label>
+            <label><span class="label">Дата</span><input id="dDate" type="date"></label>
+          </div>
+          <datalist id="tickerList"></datalist>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <button type="submit" class="primary">Сохранить сделку</button>
+            <button type="button" id="dealCancel">Отмена</button>
+            <span class="hint" id="dealMsg"></span>
+          </div>
+        </form>
         <div class="editor" id="editor" hidden>
           <label for="pfText" class="hint">Одна позиция на строку: тикер, количество, средняя цена. Облигации в процентах от номинала, фьючерсы в пунктах. Примеры: <span class="num">SBER 120 268,5</span> · <span class="num">SU26238RMFS4 10 61,2</span> · <span class="num">GLDRUB_TOM 5 9800</span></label>
           <textarea id="pfText" spellcheck="false"></textarea>
@@ -249,6 +278,9 @@ details.how p{margin:6px 0 0;max-width:68ch}
             <tbody id="holdings"></tbody>
           </table>
         </div>
+        <details class="how deals" id="dealsBox" hidden><summary id="dealsSum">Сделки</summary>
+          <div class="scroll"><table><tbody id="dealsList"></tbody></table></div>
+        </details>
       </section>
 
       <section class="panel" id="v-mk" aria-label="Рынки" hidden>
@@ -796,6 +828,7 @@ function schedule(){ clearInterval(timer); const sec=+$("interval").value; store
 $("interval").value=String(store.get("int",30)); $("interval").addEventListener("change",schedule);
 
 $("editBtn").addEventListener("click",()=>{
+  $("dealForm").hidden=true;
   $("pfText").value=portfolio().map(h=>`${h.s} ${String(h.q).replace(".",",")} ${String(h.a).replace(".",",")}`).join("\n");
   $("editMsg").textContent=""; $("editor").hidden=false; $("pfText").focus();
 });
@@ -815,37 +848,54 @@ function parseReport(text){
   const per=(doc.body?.textContent||"").match(/за период с (\d{2}\.\d{2}\.\d{4}) по (\d{2}\.\d{2}\.\d{4})/);
   return {deals, from:per?isoRu(per[1]):null, to:per?isoRu(per[2]):null};
 }
-function positionsFrom(deals){
-  const pos={};
+function book(deals){
+  const pos={}; let realized=0;
   for(const x of [...deals].sort((a,b)=>a.d.localeCompare(b.d))){
     const p=pos[x.code]??={s:x.code,q:0,a:0};
-    if(x.side>0){ p.a=(p.a*p.q+x.p*x.q)/(p.q+x.q); p.q+=x.q } else { p.q-=x.q; if(p.q<=1e-9){ p.q=0; p.a=0 } }
+    if(x.side>0){ p.a=(p.a*p.q+x.p*x.q)/(p.q+x.q); p.q+=x.q }
+    else { const qq=Math.min(x.q,p.q); realized+=(x.p-p.a)*qq*(state.inst[x.code]?.mult||1); p.q-=x.q; if(p.q<=1e-9){ p.q=0; p.a=0 } }
   }
-  return Object.values(pos).filter(p=>p.q>0).map(p=>({s:p.s,q:p.q,a:Math.round(p.a*1e4)/1e4}));
+  return {pf:Object.values(pos).filter(p=>p.q>0).map(p=>({s:p.s,q:p.q,a:Math.round(p.a*1e4)/1e4})), realized};
+}
+const positionsFrom = deals=> book(deals).pf;
+function getDeals(){
+  let d=store.get("deals",null);
+  if(!d){ d = pfIsSample() ? [] : portfolio().map(h=>({id:"seed-"+h.s,seed:true,d:"0000-00-00",code:h.s,side:1,q:h.q,p:h.a,fee:0})); }
+  return d;
+}
+function applyDeals(deals){
+  store.set("deals",deals); state.pf=positionsFrom(deals); store.set("pf",state.pf); state.sigAt=0;
+  renderSrc(); refresh();
 }
 function renderSrc(){
-  const r=store.get("report",null), el=$("pfSrc");
-  if(!r||pfIsSample()){ el.hidden=true; return }
-  el.hidden=false;
-  el.textContent=`Из отчёта брокера: ${r.n} ${plural(r.n,["сделка","сделки","сделок"])} за ${dateRu(r.from)} – ${dateRu(r.to)}, комиссии ${fmtR(r.fee,2)}. Средняя цена без комиссий. Новые месяцы добавляйте следующими отчётами.`;
+  const r=store.get("report",null), el=$("pfSrc"), deals=store.get("deals",null)||[];
+  const manual=deals.filter(d=>d.manual).length, parts=[];
+  if(r) parts.push(`Отчёт брокера за ${dateRu(r.from)} – ${dateRu(r.to)}, комиссии ${fmtR(r.fee,2)}`);
+  if(manual) parts.push(`${manual} ${plural(manual,["сделка добавлена","сделки добавлены","сделок добавлено"])} вручную`);
+  const real=book(deals).realized; if(deals.some(d=>d.side<0)) parts.push(`зафиксировано на продажах ${fmtS(real)}`);
+  el.hidden=!parts.length||pfIsSample(); el.textContent=parts.join(" · ")+(parts.length?". Средняя цена без комиссий.":"");
+  const list=[...deals].filter(d=>!d.seed).sort((a,b)=>b.d.localeCompare(a.d));
+  $("dealsBox").hidden=!list.length;
+  $("dealsSum").textContent=`Сделки (${list.length})`;
+  $("dealsList").innerHTML=list.map(d=>`<tr><td class="num">${dateRu(d.d.slice(0,10))}</td><td style="text-align:left"><span class="sig ${d.side>0?"buy":"sell"}">${d.side>0?"Купил":"Продал"}</span></td><td style="text-align:left" class="tk">${esc(d.code)}</td><td class="num">${fmt(d.q,d.q%1?2:0)} × ${fmt(d.p,pd(d.p))}</td><td class="hint" style="text-align:left">${d.manual?"вручную":"отчёт"}</td><td>${d.manual?`<button type="button" class="x" data-deldeal="${esc(d.id)}" aria-label="Удалить сделку">✕</button>`:""}</td></tr>`).join("");
 }
 $("reportFile").addEventListener("change",async e=>{
   const files=[...e.target.files]; if(!files.length) return;
-  const old=store.get("deals",[]), byId=Object.fromEntries(old.map(d=>[d.id,d]));
-  let from=store.get("report",null)?.from||null, to=store.get("report",null)?.to||null, added=0;
+  // report deals replace hand-entered starting positions and any manual deals inside the report's period
+  let byId=Object.fromEntries((store.get("deals",null)||[]).filter(d=>!d.seed).map(d=>[d.id,d]));
+  let from=store.get("report",null)?.from||null, to=store.get("report",null)?.to||null, found=0;
   for(const f of files){
-    try{ const r=parseReport(await f.text());
-      for(const d of r.deals){ if(!byId[d.id]) added++; byId[d.id]=d }
+    try{ const r=parseReport(await f.text()); found+=r.deals.length;
+      if(r.from&&r.to) for(const [id,d] of Object.entries(byId)) if(d.manual&&d.d.slice(0,10)>=r.from&&d.d.slice(0,10)<=r.to) delete byId[id];
+      for(const d of r.deals) byId[d.id]=d;
       if(r.from&&(!from||r.from<from)) from=r.from; if(r.to&&(!to||r.to>to)) to=r.to;
     }catch(err){}
   }
-  const deals=Object.values(byId);
   e.target.value="";
-  if(!deals.length){ $("pfSrc").hidden=false; $("pfSrc").textContent="В файле не нашлось сделок. Нужен брокерский отчёт Сбера в формате HTML."; return }
-  store.set("deals",deals);
-  store.set("report",{n:deals.length,from,to,fee:deals.reduce((a,d)=>a+(d.fee||0),0)});
-  state.pf=positionsFrom(deals); store.set("pf",state.pf); state.sigAt=0;
-  renderSrc(); refresh();
+  if(!found){ $("pfSrc").hidden=false; $("pfSrc").textContent="В файле не нашлось сделок. Нужен брокерский отчёт Сбера в формате HTML."; return }
+  const deals=Object.values(byId);
+  store.set("report",{from,to,fee:deals.filter(d=>!d.manual).reduce((a,d)=>a+(d.fee||0),0)});
+  applyDeals(deals);
 });
 $("cancelBtn").addEventListener("click",()=>{ $("editor").hidden=true });
 $("saveBtn").addEventListener("click",()=>{
@@ -857,7 +907,41 @@ $("saveBtn").addEventListener("click",()=>{
     if(!/^[A-Za-z0-9_.@-]+$/.test(s)||!isFinite(q)||!isFinite(a)) bad.push(i+1); else out.push({s,q,a});
   });
   if(bad.length){ $("editMsg").textContent="Не понял строки: "+bad.join(", ")+". Нужен формат: ТИКЕР КОЛИЧЕСТВО ЦЕНА"; return }
-  state.pf=out; store.set("pf",out); store.set("report",null); renderSrc(); $("editor").hidden=true; state.sigAt=0; refresh();
+  store.set("report",null); $("editor").hidden=true;
+  applyDeals(out.map(h=>({id:"seed-"+h.s,seed:true,d:"0000-00-00",code:h.s,side:1,q:h.q,p:h.a,fee:0})));
+});
+/* ---------- Manual deal entry ---------- */
+let dealSide=1;
+const findInst = raw=>{ const t=raw.trim(); return state.inst[t]? t : Object.keys(state.inst).find(k=>k.toUpperCase()===t.toUpperCase()) || t.toUpperCase() };
+$("dealBtn").addEventListener("click",()=>{
+  const f=$("dealForm"); f.hidden=!f.hidden; if(f.hidden) return;
+  $("editor").hidden=true; $("dealMsg").textContent="";
+  $("dDate").value=isoDay(new Date(Date.now()+3*3600e3));
+  const sel=state.inst[state.selected]; $("dTicker").value=sel?state.selected:""; $("dQty").value=""; $("dPrice").value=sel?.last!=null?String(sel.last).replace(".",","):"";
+  dealHint();
+  $("tickerList").innerHTML=Object.values(state.inst).sort((a,b)=>(b.val||0)-(a.val||0)).slice(0,400).map(i=>`<option value="${esc(i.id)}">${esc(i.name)}</option>`).join("");
+  $("dTicker").focus();
+});
+$("dealCancel").addEventListener("click",()=>{ $("dealForm").hidden=true });
+function dealHint(){
+  const id=findInst($("dTicker").value), it=state.inst[id], held=portfolio().find(h=>h.s===id);
+  $("dName").textContent = it ? it.name+(held?` · в портфеле ${fmt(held.q,held.q%1?2:0)}`:"") : ($("dTicker").value?"нет на Мосбирже в режимах Сбера":"");
+  $("dPriceL").textContent = it?.cls==="bonds"?"Цена, % номинала": it?.cls==="futures"?"Цена, пункты":"Цена, ₽";
+}
+$("dTicker").addEventListener("input",()=>{ dealHint(); const it=state.inst[findInst($("dTicker").value)]; if(it?.last!=null) $("dPrice").value=String(it.last).replace(".",",") });
+document.querySelectorAll("[data-side]").forEach(b=>b.addEventListener("click",()=>{ dealSide=+b.dataset.side; document.querySelectorAll("[data-side]").forEach(x=>x.setAttribute("aria-pressed",x===b)) }));
+$("dealForm").addEventListener("submit",e=>{
+  e.preventDefault();
+  const code=findInst($("dTicker").value), q=num2($("dQty").value), pr=num2($("dPrice").value), d=$("dDate").value||isoDay(new Date());
+  if(!code||!(q>0)||!(pr>0)){ $("dealMsg").textContent="Заполните тикер, количество и цену."; return }
+  const held=portfolio().find(h=>h.s===code)?.q||0;
+  if(dealSide<0 && q>held+1e-9){ $("dealMsg").textContent=`В портфеле только ${fmt(held,held%1?2:0)} ${code}, продать ${fmt(q,0)} не получится.`; return }
+  const deals=getDeals(); deals.push({id:"m-"+Date.now(),manual:true,d:d+" "+new Date().toTimeString().slice(0,8),code,side:dealSide,q,p:pr,fee:0});
+  $("dealForm").hidden=true; applyDeals(deals);
+});
+document.addEventListener("click",e=>{
+  const b=e.target.closest("[data-deldeal]"); if(!b) return;
+  applyDeals(getDeals().filter(d=>d.id!==b.dataset.deldeal));
 });
 
 if(!TABS.some(t=>t.k===state.tab)) state.tab="fav";
